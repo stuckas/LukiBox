@@ -1,17 +1,15 @@
-/*
-Using DFRobotDFPlayerMini Library V 1.0.5
-*/
-
-#include "Arduino.h"
-#include "SoftwareSerial.h"
-#include "DFRobotDFPlayerMini.h"
+#include <Arduino.h>
+#include <SoftwareSerial.h>
+#define DEBUG_DFPLAYER_COMMUNICATION
+#include "DFMiniMp3.h"
 #include <Keypad.h>
 
-void(* resetFunc) (void) = 0;
-
 SoftwareSerial mySoftwareSerial(11, 10); // RX, TX
-DFRobotDFPlayerMini myDFPlayer;
-void printDetail(uint8_t type, int value);
+
+volatile boolean error = false;
+volatile uint16_t errCode = 0;
+class Mp3Notify;
+DFMiniMp3<SoftwareSerial, Mp3Notify> player(mySoftwareSerial);
 
 unsigned int lastKey = 0;
 unsigned long lastNext = 0;
@@ -32,29 +30,46 @@ Keypad kpd = Keypad( makeKeymap(keys), rowPins, colPins, ROWS, COLS );
 
 void setup()
 {
-  mySoftwareSerial.begin(9600);
   Serial.begin(115200);
   
   Serial.println();
-  Serial.println(F("DFRobot DFPlayer Mini Demo"));
-  Serial.println(F("Initializing DFPlayer ... (May take 3~5 seconds)"));
+  Serial.println(F("Initializing DFPlayer..."));
+  delay(1000);
+  player.setACK(false);
+  player.begin();
   
-  while (!myDFPlayer.begin(mySoftwareSerial)) {  //Use softwareSerial to communicate with mp3.
-    Serial.println(F("Unable to begin:"));
-    Serial.println(F("1.Please recheck the connection!"));
-    Serial.println(F("2.Please insert the SD card!"));
+  while (true) {
+    error = false;
+    player.getStatus();
+    if (!error) break;
+    if (errCode == DfMp3_Error_RxTimeout) {
+        Serial.println(F("==========================="));
+        Serial.println(F("\n No communication possible"));
+        Serial.println(F(" !!! CHECK YOUR WIRING !!!"));
+        Serial.println(F("\n==========================="));
+      }
+      if (errCode == DfMp3_Error_Busy) {
+        Serial.println(F("=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-="));
+        Serial.println(F("\n No medium found!!!"));
+        Serial.println(F(" Check SD card and/or USB stick!"));
+        Serial.println(F("\n=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-="));
+      }
     delay(1000); // Code to compatible with ESP8266 watch dog.
-    resetFunc();
   }
   Serial.println(F("DFPlayer Mini online."));
-  //myDFPlayer.reset();
-  myDFPlayer.outputDevice(DFPLAYER_DEVICE_SD);
+  player.setPlaybackSource(DfMp3_PlaySource_Sd);
+  delay(100);
+  player.setEq(DfMp3_Eq_Normal);
+  delay(100);
+  player.enableDac();
+  delay(250);
+  player.setVolume(15); //Set volume value. From 0 to 30
+
   int r = (analogRead(A1) % 14) + 1;
-  //int r = random(1, 15);
+
   Serial.print(F("random "));
   Serial.println(r);
   lastKey = r;
-  myDFPlayer.volume(15);  //Set volume value. From 0 to 30
   play();
 }
 
@@ -74,11 +89,11 @@ void loop()
                 switch (kpd.key[i].kchar) {  // Report active key state : IDLE, PRESSED, HOLD, or RELEASED
                     case 16:
                     Serial.print("Volume Down");
-                    myDFPlayer.volumeDown();
+                    player.decreaseVolume();
                 return;
                     case 15:
                     Serial.print("Volume Up");
-                    myDFPlayer.volumeUp();
+                    player.increaseVolume();
                 return;
                     default:
                     
@@ -100,27 +115,7 @@ void loop()
 
     // nothing pressed
     if (i1 == 0) {
-      if (myDFPlayer.available() /*&& (millis()-lastNext > 2000)*/) {
-        uint8_t type = myDFPlayer.readType();
-        printDetail(type, myDFPlayer.read());
-        Serial.print("idle ");
-        Serial.print(millis());
-        Serial.print(" - ");
-        Serial.print(lastNext);
-        Serial.print(" -> ");
-        lastNext = millis();
-        
-        if (type == DFPlayerPlayFinished) {
-          next();
-        } else if (type == DFPlayerError) {
-          // folder not found, try next
-          nextFolder();
-        } else {
-          // try again
-          play();
-        }
-        
-      }
+      busyWait(100);    
       return;
     }
 
@@ -132,7 +127,7 @@ void loop()
       // i1 < i2
     }
     n = (i1*14)+i2-i1*(i1+1)/2; // 1..105
-    if (n>100) n=100;
+    if (n>=100) n=99;
     
     Serial.print("n: ");
     Serial.println(n);
@@ -151,7 +146,7 @@ void play() {
   Serial.print(lastKey);
   Serial.print(" ");
   Serial.println(songFolder);
-  myDFPlayer.playFolder(lastKey, songFolder);
+  player.playFolderTrack(lastKey, songFolder);
 }
 
 void nextFolder() {
@@ -161,7 +156,7 @@ void nextFolder() {
     lastKey++;
     lastKey = lastKey % 100;
     count = -1;
-    while (count < 0) count = myDFPlayer.readFileCountsInFolder(lastKey);
+    while (count < 0) count = player.getFolderTrackCount(lastKey);
 
     Serial.print("Next Folder: ");
     Serial.print(lastKey);
@@ -174,7 +169,7 @@ void nextFolder() {
 void next() {
   Serial.print("next: ");
   int count = -1;
-  while (count < 0) { count = myDFPlayer.readFileCountsInFolder(lastKey); }
+  while (count < 0) { count = player.getFolderTrackCount(lastKey); }
   if (count == 0) {
     nextFolder();
     return;
@@ -186,69 +181,80 @@ void next() {
   Serial.print("->");
   play();
 }
+boolean isPlaying() {
+      uint16_t state = 0;
+      int retries = 3;
 
-void printDetail(uint8_t type, int value){
-  Serial.print(type); Serial.print(" "); Serial.print(value); Serial.print(" ");
-  switch (type) {
-    case TimeOut:
-      Serial.println(F("Time Out!"));
-      break;
-    case WrongStack:
-      Serial.println(F("Stack Wrong!"));
-      break;
-    case DFPlayerCardInserted:
-      Serial.println(F("Card Inserted!"));
-      break;
-    case DFPlayerCardRemoved:
-      Serial.println(F("Card Removed!"));
-      break;
-    case DFPlayerCardOnline:
-      Serial.println(F("Card Online!"));
-      break;
-    case DFPlayerUSBInserted:
-      Serial.println("USB Inserted!");
-      break;
-    case DFPlayerUSBRemoved:
-      Serial.println("USB Removed!");
-      break;
-    case DFPlayerPlayFinished:
-      Serial.print(F("Number:"));
-      Serial.print(value);
-      Serial.println(F(" Play Finished!"));
-      break;
-    case DFPlayerError:
-      Serial.print(F("DFPlayerError:"));
-      switch (value) {
-        case Busy:
-          Serial.println(F("Card not found"));
-          break;
-        case Sleeping:
-          Serial.println(F("Sleeping"));
-          break;
-        case SerialWrongStack:
-          Serial.println(F("Get Wrong Stack"));
-          break;
-        case CheckSumNotMatch:
-          Serial.println(F("Check Sum Not Match"));
-          break;
-        case FileIndexOut:
-          Serial.println(F("File Index Out of Bound"));
-          break;
-        case FileMismatch:
-          Serial.println(F("Cannot Find File"));
-          break;
-        case Advertise:
-          Serial.println(F("In Advertise"));
-          break;
-        default:
-          break;
+      error = true;
+      while (retries > 0 && error) {
+        --retries;
+        error = false;
+        state = player.getStatus() & 0xFF;
+        if (error) {
+          delay(100);
+        }
       }
-      break;
-    default:
-      Serial.print("Unknown: ");
-      Serial.print(type);
-      Serial.print(", ");
-      Serial.println(value);
-      break;
-  }  
+      error = false;
+
+      return (state & 1) == 1;
 }
+
+    void busyWait(long ms) {
+      long startMs = millis();
+      while (millis() < startMs + ms) {
+        player.loop();
+        delay(50);
+      }
+    }
+
+
+class Mp3Notify
+{
+  public:
+    static void OnError(uint16_t errorCode) {
+      Serial.print(F("--------------\n ERROR "));
+      Serial.println(errorCode);
+      Serial.println(F("--------------"));
+      error = true;
+      errCode = errorCode;
+      nextFolder();
+    }
+
+    static void OnPlayFinished(uint16_t globalTrack) {
+      Serial.print(F("Callback global track finished: "));
+      Serial.println(globalTrack);
+      next();
+    }
+
+    static void OnCardOnline(uint16_t code) {
+      Serial.print(F("Callback OnCardOnline: "));
+      Serial.println(code);
+      play();
+    }
+
+    static void OnCardInserted(uint16_t code) {
+      Serial.print(F("Callback OnCardInserted: "));
+      Serial.println(code);
+      play();
+    }
+
+    static void OnCardRemoved(uint16_t code) {
+      Serial.print(F("Callback OnCardRemoved: "));
+      Serial.println(code);
+    }
+
+    static void OnUsbOnline(uint16_t code) {
+      Serial.print(F("Callback OnUsbOnline: "));
+      Serial.println(code);
+    }
+
+    static void OnUsbInserted(uint16_t code) {
+      Serial.print(F("Callback OnUsbInserted: "));
+      Serial.println(code);
+    }
+
+    static void OnUsbRemoved(uint16_t code) {
+      Serial.print(F("Callback OnUsbRemoved: "));
+      Serial.println(code);
+    }
+};
