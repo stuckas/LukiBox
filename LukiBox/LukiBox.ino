@@ -34,7 +34,7 @@ void setup()
   
   Serial.println();
   Serial.println(F("Initializing DFPlayer..."));
-  delay(1000);
+  delay(0000);
   player.setACK(false);
   player.begin();
   
@@ -54,7 +54,7 @@ void setup()
         Serial.println(F(" Check SD card and/or USB stick!"));
         Serial.println(F("\n=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-="));
       }
-    delay(1000); // Code to compatible with ESP8266 watch dog.
+    delay(0000); // Code to compatible with ESP8266 watch dog.
   }
   Serial.println(F("DFPlayer Mini online."));
   player.setPlaybackSource(DfMp3_PlaySource_Sd);
@@ -70,6 +70,7 @@ void setup()
   Serial.print(F("random "));
   Serial.println(r);
   lastKey = r;
+  delay(100);
   play();
 }
 
