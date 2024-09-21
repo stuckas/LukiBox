@@ -34,7 +34,7 @@ void setup()
   
   Serial.println();
   Serial.println(F("Initializing DFPlayer..."));
-  delay(0000);
+  for (int i=0; i<1000; i++) analogRead(A1);
   player.setACK(false);
   player.begin();
   
